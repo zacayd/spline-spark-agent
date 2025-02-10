@@ -21,7 +21,10 @@ import org.apache.spark.sql.SparkSession;
 import za.co.absa.spline.agent.AgentConfig;
 import za.co.absa.spline.harvester.SparkLineageInitializer;
 
-public class JavaExampleJob {
+import java.io.File;
+import java.util.Arrays;
+
+public class JavaExampleJob_Files {
 
     public static void main(String[] args) {
 
@@ -31,18 +34,21 @@ public class JavaExampleJob {
             .appName("java example app")
             .master("local[*]")
             .config("spark.driver.host", "localhost")
-            .config("spark.spline.mode", "ENABLED")  // ✅ Force enable Spline
-            .config("spark.spline.lineageDispatcher", "http")  // ✅ Set dispatcher
-            .config("spark.spline.lineageDispatcher.http.producer.url", "https://ucb.spline.octopai.com/producer") // ✅ Set Producer URL
+            .config("spark.spline.mode", "ENABLED")  // ✅ Enable Spline
+            .config("spark.spline.lineageDispatcher", "hdfs")  // ✅ Use HDFS dispatcher
+            .config("spark.spline.lineageDispatcher.hdfs.className", "za.co.absa.spline.harvester.dispatcher.HDFSLineageDispatcher") // 🔥 Fix: Define HDFS Dispatcher
+            .config("spark.spline.lineageDispatcher.hdfs.directory", "file:///C:/tmpx")  // ✅ Store lineage files in local storage
+            .config("spark.spline.lineageDispatcher.hdfs.fileNamePrefix", "lineage_")  // ✅ File naming pattern
             .getOrCreate();
 
 
-        // Explicitly enable Spline lineage tracking
+
+// Enable Spline Tracking
         AgentConfig splineConfig = AgentConfig.builder().build();
         SparkLineageInitializer.enableLineageTracking(session, splineConfig);
 
         System.out.println("Spline Mode: " + session.conf().get("spark.spline.mode", "NOT SET"));
-        System.out.println("Spline Producer URL: " + session.conf().get("spark.spline.lineageDispatcher.http.producer.url", "NOT SET"));
+        System.out.println("Spline HDFS: " + session.conf().get("spark.spline.lineageDispatcher.hdfs.directory", "NOT SET"));
 
 
         // Explicitly enable Spline lineage tracking
@@ -59,6 +65,26 @@ public class JavaExampleJob {
             .as("source")
             .write()
             .mode(SaveMode.Overwrite)
-            .csv("data/output/batch/java-sample.csv");
+            .csv("data/output/batch/java-sample2.csv");
+
+        printLineageFiles("/tmp/spline");
+
     }
+
+    private static void printLineageFiles(String directoryPath) {
+        File dir = new File(directoryPath);
+        if (dir.exists() && dir.isDirectory()) {
+            File[] files = dir.listFiles();
+            if (files != null && files.length > 0) {
+                System.out.println("✅ Lineage Files Generated:");
+                Arrays.stream(files).forEach(file -> System.out.println(" - " + file.getAbsolutePath()));
+            } else {
+                System.out.println("⚠️ No lineage files found in " + directoryPath);
+            }
+        } else {
+            System.out.println("❌ Lineage directory does not exist: " + directoryPath);
+        }
+    }
+
+
 }

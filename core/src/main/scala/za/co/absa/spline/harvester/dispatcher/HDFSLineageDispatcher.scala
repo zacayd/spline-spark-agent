@@ -32,15 +32,6 @@ import za.co.absa.spline.producer.model.{ExecutionEvent, ExecutionPlan}
 import java.net.URI
 import scala.concurrent.blocking
 
-/**
- * A port of https://github.com/AbsaOSS/spline/tree/release/0.3.9/persistence/hdfs/src/main/scala/za/co/absa/spline/persistence/hdfs
- *
- * Note:
- * This class is unstable, experimental, is mostly used for debugging, with no guarantee to work properly
- * for every generic use case in a real production application.
- *
- * It is NOT thread-safe, strictly synchronous assuming a predefined order of method calls: `send(plan)` and then `send(event)`
- */
 @Experimental
 class HDFSLineageDispatcher(filename: String, permission: FsPermission, bufferSize: Int)
   extends LineageDispatcher
@@ -61,41 +52,121 @@ class HDFSLineageDispatcher(filename: String, permission: FsPermission, bufferSi
     this._lastSeenPlan = plan
   }
 
+//  override def send(event: ExecutionEvent): Unit = {
+//    if (this._lastSeenPlan == null || this._lastSeenPlan.id.get != event.planId)
+//      throw new IllegalStateException("send(event) must be called strictly after send(plan) method with matching plan ID")
+//
+//    try {
+//      // ✅ Fetch SparkContext from the active session
+//      val sparkContext = SparkContext.getOrCreate()
+//
+//      // ✅ Read lineage directory from SparkContext config
+//      val lineageDir = sparkContext.getConf.get(
+//        "spark.spline.lineageDispatcher.hdfs.directory",
+//        "file:///C:/tmp" // Default to local storage on Windows
+//      )
+//
+//      // ✅ Extract executionPlanID
+//      val executionPlanID = this._lastSeenPlan.id.getOrElse("unknown_plan")
+//
+//      // ✅ Generate a unique filename with executionPlanID
+//      val timestamp = System.currentTimeMillis()
+//      val path = s"$lineageDir/lineage_${executionPlanID}.json"
+//
+//      val planWithEvent = Map(
+//        "executionPlan" -> this._lastSeenPlan,
+//        "executionEvent" -> event
+//      )
+//
+//      import HarvesterJsonSerDe.impl._
+//      persistToHadoopFs(planWithEvent.toJson, path)
+//    } finally {
+//      this._lastSeenPlan = null
+//    }
+//  }
+
   override def send(event: ExecutionEvent): Unit = {
-    // check state
     if (this._lastSeenPlan == null || this._lastSeenPlan.id.get != event.planId)
       throw new IllegalStateException("send(event) must be called strictly after send(plan) method with matching plan ID")
 
     try {
-      val path = s"${this._lastSeenPlan.operations.write.outputSource.stripSuffix("/")}/$filename"
+      val sparkContext = SparkContext.getOrCreate()
+
+      val lineageBaseDir = sparkContext.getConf.get(
+        "spark.spline.lineageDispatcher.hdfs.directory",
+        "file:///C:/tmp" // Default to local storage on Windows
+      )
+
+      // ✅ Extract executionPlanID
+      val executionPlanID = this._lastSeenPlan.id.getOrElse("unknown_plan")
+
+      // ✅ Extract executionPlan name
+      val executionPlanName = this._lastSeenPlan.name.replaceAll("[^a-zA-Z0-9_\\-]", "_")
+
+      // ✅ Extract executionEvent appId
+      val appId = event.extra.get("appId").map(_.toString).getOrElse("unknown_appId")
+
+      // ✅ Construct the directory path dynamically
+      val fullDirPath = s"$lineageBaseDir/$executionPlanName/$appId"
+
+      // ✅ Construct the full file path
+      val filePath = s"$fullDirPath/lineage_${executionPlanID}.json"
+
+      // ✅ Create a JSON structure
       val planWithEvent = Map(
         "executionPlan" -> this._lastSeenPlan,
         "executionEvent" -> event
       )
 
       import HarvesterJsonSerDe.impl._
-      persistToHadoopFs(planWithEvent.toJson, path)
+      persistToHadoopFs(planWithEvent.toJson, filePath)
     } finally {
       this._lastSeenPlan = null
     }
   }
 
+//  private def persistToHadoopFs(content: String, fullLineagePath: String): Unit = blocking {
+//    val (fs, path) = pathStringToFsWithPath(fullLineagePath)
+//
+//    // Ensure the central lineage directory exists
+//    val parentDir = path.getParent
+//    if (!fs.exists(parentDir)) {
+//      fs.mkdirs(parentDir)
+//    }
+//
+//    logDebug(s"Opening HadoopFs output stream to $path")
+//
+//    val replication = fs.getDefaultReplication(path)
+//    val blockSize = fs.getDefaultBlockSize(path)
+//    val outputStream = fs.create(path, permission, true, bufferSize, replication, blockSize, null)
+//
+//    logDebug(s"Writing lineage to $path")
+//    using(outputStream) {
+//      _.write(content.getBytes("UTF-8"))
+//    }
+//  }
   private def persistToHadoopFs(content: String, fullLineagePath: String): Unit = blocking {
     val (fs, path) = pathStringToFsWithPath(fullLineagePath)
+
+    // Ensure the entire directory structure exists
+    val parentDir = path.getParent
+    if (!fs.exists(parentDir)) {
+      fs.mkdirs(parentDir)
+    }
+
     logDebug(s"Opening HadoopFs output stream to $path")
 
     val replication = fs.getDefaultReplication(path)
     val blockSize = fs.getDefaultBlockSize(path)
     val outputStream = fs.create(path, permission, true, bufferSize, replication, blockSize, null)
 
-    val umask = FsPermission.getUMask(fs.getConf)
-    FsPermission.getFileDefault.applyUMask(umask)
-
     logDebug(s"Writing lineage to $path")
     using(outputStream) {
       _.write(content.getBytes("UTF-8"))
     }
   }
+
+
 }
 
 object HDFSLineageDispatcher {
@@ -109,8 +180,6 @@ object HDFSLineageDispatcher {
    * Converts string full path to Hadoop FS and Path, e.g.
    * `s3://mybucket1/path/to/file` -> S3 FS + `path/to/file`
    * `/path/on/hdfs/to/file` -> local HDFS + `/path/on/hdfs/to/file`
-   *
-   * Note, that non-local HDFS paths are not supported in this method, e.g. hdfs://nameservice123:8020/path/on/hdfs/too.
    *
    * @param pathString path to convert to FS and relative path
    * @return FS + relative path
